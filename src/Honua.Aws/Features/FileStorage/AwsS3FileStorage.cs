@@ -138,7 +138,7 @@ internal sealed class AwsS3FileStorage : CloudFileStorageBase
 
             await _client.PutObjectAsync(putRequest, linkedCancellationSource.Token);
 
-            var sizeBytes = await ResolveSizeAsync(objectKey, request, cancellationToken);
+            var sizeBytes = await ResolveSizeAsync(objectKey, request, linkedCancellationSource.Token);
             var cloudFile = new CloudFile
             {
                 FileId = objectKey,
@@ -300,6 +300,11 @@ internal sealed class AwsS3FileStorage : CloudFileStorageBase
     {
         var prefix = CloudStoragePath.BuildPrefix(folder, _options.KeyPrefix);
         var results = new List<CloudFile>();
+        if (maxResults <= 0)
+        {
+            return results;
+        }
+
         string? continuationToken = null;
 
         do

@@ -91,6 +91,12 @@ internal static class ArcGisRestQueryParameters
     /// Builds the layer-metadata URL used to discover ObjectId field name and
     /// extent at startup time.
     /// </summary>
+    /// <remarks>
+    /// Reserved for future use alongside
+    /// <see cref="IArcGisRestFeatureClient.GetLayerMetadataAsync"/>. The feature
+    /// store resolves the object-id field name and geometry type from the
+    /// canonical Metadata v2 resource today, so this is not yet on a live path.
+    /// </remarks>
     public static string BuildLayerMetadataUrl(string serviceUrl, int layerId, string? token)
     {
         var builder = new StringBuilder();
@@ -125,19 +131,40 @@ internal static class ArcGisRestQueryParameters
             || spatial.EnvelopeMaxX is not double maxX
             || spatial.EnvelopeMaxY is not double maxY)
         {
-            return;
+            // IsSimpleEnvelope guarantees the four coordinates are populated. If one is missing the
+            // filter is malformed; fail fast rather than silently dropping the spatial constraint,
+            // which would return features outside the requested envelope.
+            throw new InvalidOperationException(
+                "Simple-envelope spatial filter is missing one or more envelope coordinates.");
         }
 
         var geometry = string.Create(CultureInfo.InvariantCulture, $"{minX},{minY},{maxX},{maxY}");
         AppendEncoded(builder, "geometry", geometry);
         AppendEncoded(builder, "geometryType", "esriGeometryEnvelope");
-        AppendEncoded(builder, "spatialRel", "esriSpatialRelIntersects");
+        AppendEncoded(builder, "spatialRel", MapSpatialRel(spatial.SpatialRelationship));
 
         if (spatial.Srid is int srid && srid > 0)
         {
             AppendEncoded(builder, "inSR", srid.ToString(CultureInfo.InvariantCulture));
         }
     }
+
+    /// <summary>
+    /// Maps the requested <see cref="SpatialRelationship"/> to the ArcGIS REST <c>spatialRel</c>
+    /// token. Relationships with no envelope-meaningful ArcGIS equivalent (distance/nearest, disjoint,
+    /// equals) fall back to <c>esriSpatialRelIntersects</c>, which is the server default for an
+    /// envelope query.
+    /// </summary>
+    private static string MapSpatialRel(SpatialRelationship relationship) => relationship switch
+    {
+        SpatialRelationship.Within => "esriSpatialRelWithin",
+        SpatialRelationship.Contains => "esriSpatialRelContains",
+        SpatialRelationship.EnvelopeIntersects => "esriSpatialRelEnvelopeIntersects",
+        SpatialRelationship.Crosses => "esriSpatialRelCrosses",
+        SpatialRelationship.Touches => "esriSpatialRelTouches",
+        SpatialRelationship.Overlaps => "esriSpatialRelOverlaps",
+        _ => "esriSpatialRelIntersects",
+    };
 
     private static void AppendOutFields(StringBuilder builder, FeatureQuery query)
     {
@@ -191,6 +218,13 @@ internal static class ArcGisRestQueryParameters
 
     private static void AppendOutSr(StringBuilder builder, FeatureQuery query)
     {
+        // outSR drives the upstream reprojection: when the caller requests an
+        // OutputSrid the server returns geometry/envelopes already projected into
+        // that SRID. On the extent path, ArcGisRestFeatureStore.ResolveSrid simply
+        // echoes the spatialReference the server reports for the (already
+        // reprojected) extent, so the requested SRID and the reported SRID cannot
+        // diverge. The count path deliberately omits outSR because a count carries
+        // no geometry to reproject.
         if (query.OutputSrid is int outSrid && outSrid > 0)
         {
             AppendEncoded(builder, "outSR", outSrid.ToString(CultureInfo.InvariantCulture));

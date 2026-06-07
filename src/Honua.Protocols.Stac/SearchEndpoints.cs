@@ -44,10 +44,12 @@ internal static class SearchEndpoints
             .Produces<StacItemCollection>(200, MediaTypes.GeoJson)
             .Produces(400);
 
-        // Read-only OGC/STAC search surface; anonymous by design. The POST form
-        // mirrors the GET search semantics — the body just carries the same
-        // filter parameters as a JSON document — and is gated downstream by the
-        // per-publication access policy via StacV2Lookups.ResolveVisibleStacPublicationsAsync.
+        // Read-only OGC/STAC search surface. The POST form mirrors the GET search
+        // semantics — the body just carries the same filter parameters as a JSON
+        // document. Both verbs rely on the per-publication access policy enforced
+        // downstream via StacV2Lookups.ResolveVisibleStacPublicationsAsync, matching
+        // the sibling catalog/collection read endpoints (neither verb opts out of the
+        // ambient authorization policy with AllowAnonymous, so they stay symmetric).
         endpoints.MapPost("/stac/search", HandleSearchPost)
             .WithDisplayName("STAC Search (POST)")
             .WithName("StacSearchPost")
@@ -55,7 +57,6 @@ internal static class SearchEndpoints
             .WithDescription("Searches STAC items across collections with a JSON request body")
             .WithTags("STAC")
             .Accepts<StacSearchRequest>(MediaTypes.Json)
-            .AllowAnonymous()
             .Produces<StacItemCollection>(200, MediaTypes.GeoJson)
             .Produces(400);
 
@@ -310,7 +311,7 @@ internal static class SearchEndpoints
                     geometryService,
                     filterProcessor,
                     defaultFilterLangIsText,
-                    cancellationToken);
+                    cancellationToken).ConfigureAwait(false);
                 if (!layerQueryResult.IsSuccess)
                 {
                     StacTelemetry.SetFailed(activity, "invalid_search_parameters");
@@ -321,9 +322,13 @@ internal static class SearchEndpoints
                 var projection = layerQueryResult.Projection;
                 var layerId = target.LayerIndex;
 
+                // A storage query failure (reader error, untransformable bbox, etc.) propagates to the
+                // outer handler, which records the exception on the search.work activity and fails the
+                // request with a 500 rather than silently returning partial/empty results.
                 if (remainingSkip > 0)
                 {
-                    var layerCount = await featureReader.CountAsync(layerId, query, cancellationToken);
+                    var layerCount = await featureReader.CountAsync(layerId, query, cancellationToken)
+                        .ConfigureAwait(false);
                     totalMatched += layerCount;
 
                     if (remainingSkip >= layerCount)
@@ -336,7 +341,8 @@ internal static class SearchEndpoints
                     query = query with { Offset = remainingSkip, Limit = remaining };
                     remainingSkip = 0;
 
-                    var result = await featureReader.QueryAsync(layerId, query, cancellationToken);
+                    var result = await featureReader.QueryAsync(layerId, query, cancellationToken)
+                        .ConfigureAwait(false);
                     allItems.AddRange(result.Features
                         .Select(f => ApplyFieldProjection(
                             StacMappingService.MapFeatureToItem(
@@ -354,7 +360,8 @@ internal static class SearchEndpoints
                     var remaining = effectiveLimit - allItems.Count;
                     query = query with { Limit = remaining };
 
-                    var result = await featureReader.QueryAsync(layerId, query, cancellationToken);
+                    var result = await featureReader.QueryAsync(layerId, query, cancellationToken)
+                        .ConfigureAwait(false);
                     totalMatched += result.TotalCount;
 
                     allItems.AddRange(result.Features
@@ -371,7 +378,8 @@ internal static class SearchEndpoints
                 }
                 else
                 {
-                    totalMatched += await featureReader.CountAsync(layerId, query, cancellationToken);
+                    totalMatched += await featureReader.CountAsync(layerId, query, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
 
